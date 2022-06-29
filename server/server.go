@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 )
 
 const (
@@ -16,9 +17,10 @@ const (
 type client chan<- string // an outgoing message channel
 
 var (
-	entering = make(chan client)
-	leaving  = make(chan client)
-	messages = make(chan string) // all incoming client messages
+	onlineConns = make(map[string]net.Conn)
+	entering    = make(chan client)
+	leaving     = make(chan client)
+	messages    = make(chan string, 1024) // all incoming client messages
 )
 
 func broadcaster() {
@@ -40,46 +42,111 @@ func broadcaster() {
 	}
 }
 func main() {
-	// tcp 监听并接受端口
 	l, err := net.Listen("tcp", IP+PORT)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	//最后关闭
 	defer l.Close()
 	fmt.Printf("tcp服务端开始监听 %s 端口...", PORT)
-	// 使用循环一直接受连接
+
+	go handleMessage()
 	for {
 		fmt.Println("loop test")
 		//Listener.Accept() 接受连接
-		//conn 是双方的。和长度为1的channel有些类似。
 		conn, err := l.Accept()
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 		//处理tcp请求
+
+		addr := fmt.Sprintf("%s", conn.RemoteAddr())
+		onlineConns[addr] = conn
+		fmt.Println(conn.RemoteAddr(), "is online")
+
 		go handleConnection(conn)
+
 	}
 }
-func handleConnection(c net.Conn) {
+
+func handleMessage() {
+	for {
+		select {
+		case message := <-messages:
+			doProcessMessage(message)
+		case <-leaving:
+			break
+		}
+	}
+}
+
+func doProcessMessage(message string) {
+	//# means communication，* means normal order
+	contents := strings.Split(message, "#")
+	if len(contents) > 1 {
+		addr := contents[0]
+		sendMessage := strings.Join(contents[1:], "#")
+		addr = strings.Trim(addr, "")
+		if conn, ok := onlineConns[addr]; ok {
+			input, err := Encode(sendMessage)
+			errorCheck(err)
+			if _, err := conn.Write(input); err != nil {
+				fmt.Println(err)
+			}
+		}
+	} else {
+		contents := strings.Split(message, "*")
+
+	}
+
+}
+func handleConnection(conn net.Conn) {
 	//一些代码逻辑...
 	fmt.Println("tcp服务端开始处理请求...")
-	//读取
-	//reader = bufio.NewReader(c)
-	buffer := make([]byte, 1024)
-	//如果客户端无数据则会阻塞，服务端阻塞，直到等待客户端传递数据。
-	if _, err := c.Read(buffer); err != nil {
-		fmt.Println(err)
-	}
-	//mistake handle
-	fmt.Println(string(buffer))
-	if _, err := c.Write(buffer); err != nil {
+
+	//delete connection info and print online client
+	defer func(conn net.Conn) {
+		addr := fmt.Sprintf("%s", conn.RemoteAddr())
+		delete(onlineConns, addr)
+		for i := range onlineConns {
+			fmt.Println("now online client:" + i)
+		}
+	}(conn)
+
+	reader := bufio.NewReader(conn)
+	message, err := Decode(reader)
+	errorCheck(err)
+
+	//write to channel
+	messages <- message
+
+	if _, err := conn.Write([]byte(message)); err != nil {
 		fmt.Println(err)
 	}
 	fmt.Println("tcp服务端开始处理请求完毕...")
 
+}
+func errorCheck(err error) {
+	if err != nil {
+		fmt.Println("Decode failure", err.Error())
+	}
+}
+func Encode(message string) ([]byte, error) {
+	// 读取消息的长度，转换成int32类型（占4个字节）
+	var length = int32(len(message))
+	var pkg = new(bytes.Buffer)
+	// 写入消息头
+	err := binary.Write(pkg, binary.LittleEndian, length)
+	if err != nil {
+		return nil, err
+	}
+	// 写入消息实体
+	err = binary.Write(pkg, binary.LittleEndian, []byte(message))
+	if err != nil {
+		return nil, err
+	}
+	return pkg.Bytes(), nil
 }
 func Decode(reader *bufio.Reader) (string, error) {
 	// 读取消息的长度

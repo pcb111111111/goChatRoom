@@ -64,7 +64,6 @@ func Encode(message string) ([]byte, error) {
 	}
 	return pkg.Bytes(), nil
 }
-
 func sendMessage(conn net.Conn) {
 	for {
 		reader := bufio.NewReader(os.Stdin)
@@ -77,8 +76,10 @@ func sendMessage(conn net.Conn) {
 			break
 		}
 
-		_, err := conn.Write([]byte(input))
-		if err != nil {
+		message, err := Encode(input)
+		checkError(err)
+
+		if _, err := conn.Write(message); err != nil {
 			conn.Close()
 			fmt.Println("Write failure" + err.Error())
 		}
