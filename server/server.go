@@ -14,47 +14,29 @@ const (
 	PORT = "1000"
 )
 
-type client chan<- string // an outgoing message channel
-
 var (
-	onlineConns = make(map[string]net.Conn)
-	entering    = make(chan client)
-	leaving     = make(chan client)
-	messages    = make(chan string, 1024) // all incoming client messages
+	onlineConns = make(map[string]net.TCPConn)
+	leaving     = make(chan string)
+	messages    = make(chan string, 1000) // all incoming client messages
 )
 
-func broadcaster() {
-	clients := make(map[client]bool) // all connected clients
-	for {
-		select {
-		case msg := <-messages:
-			// Broadcast incoming message to all
-			// clients' outgoing message channels.
-			for cli := range clients {
-				cli <- msg
-			}
-		case cli := <-entering:
-			clients[cli] = true
-		case cli := <-leaving:
-			delete(clients, cli)
-			close(cli)
-		}
-	}
-}
 func main() {
-	l, err := net.Listen("tcp", IP+PORT)
+
+	addr, err := net.ResolveTCPAddr("tcp", IP+PORT)
+	if err != nil {
+		panic(err)
+	}
+	l, err := net.ListenTCP("tcp", addr)
 	if err != nil {
 		fmt.Println(err)
-		return
 	}
 	defer l.Close()
-	fmt.Printf("tcp服务端开始监听 %s 端口...", PORT)
+	fmt.Printf("tcp服务端开始监听 %s 端口...\n", PORT)
 
 	go handleMessage()
 	for {
-		fmt.Println("loop test")
 		//Listener.Accept() 接受连接
-		conn, err := l.Accept()
+		conn, err := l.AcceptTCP()
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -62,14 +44,40 @@ func main() {
 		//处理tcp请求
 
 		addr := fmt.Sprintf("%s", conn.RemoteAddr())
-		onlineConns[addr] = conn
-		fmt.Println(conn.RemoteAddr(), "is online")
-
+		onlineConns[addr] = *conn
+		for i, _ := range onlineConns {
+			fmt.Println(i, "is online")
+		}
 		go handleConnection(conn)
 
 	}
 }
+func handleConnection(conn *net.TCPConn) {
+	//一些代码逻辑...
+	fmt.Println("tcp服务端开始处理请求...")
 
+	//delete connection info and print online client
+	defer func(conn net.TCPConn) {
+		addr := fmt.Sprintf("%s", conn.RemoteAddr())
+		fmt.Println(conn.RemoteAddr(), "has left")
+		delete(onlineConns, addr)
+		for i := range onlineConns {
+			fmt.Println("now online client:" + i)
+		}
+	}(*conn)
+
+	reader := bufio.NewReader(conn)
+	message, err := Decode(reader)
+	errorCheck(err)
+
+	//write to channel
+
+	messages <- message
+	fmt.Println(message)
+
+	fmt.Println("tcp服务端开始处理请求完毕...")
+
+}
 func handleMessage() {
 	for {
 		select {
@@ -82,51 +90,58 @@ func handleMessage() {
 }
 
 func doProcessMessage(message string) {
-	//# means communication，* means normal order
+	//# means communication，* means action
 	contents := strings.Split(message, "#")
+	//if 是#号分割的内容
 	if len(contents) > 1 {
 		addr := contents[0]
 		sendMessage := strings.Join(contents[1:], "#")
-		addr = strings.Trim(addr, "")
 		if conn, ok := onlineConns[addr]; ok {
 			input, err := Encode(sendMessage)
 			errorCheck(err)
 			if _, err := conn.Write(input); err != nil {
-				fmt.Println(err)
+				fmt.Println("online info send failure")
 			}
 		}
-	} else {
+	} else { //action set
 		contents := strings.Split(message, "*")
+		action := contents[1]
+		if strings.ToUpper(action) == "LIST" {
+			addr := contents[0]
 
-	}
-
-}
-func handleConnection(conn net.Conn) {
-	//一些代码逻辑...
-	fmt.Println("tcp服务端开始处理请求...")
-
-	//delete connection info and print online client
-	defer func(conn net.Conn) {
-		addr := fmt.Sprintf("%s", conn.RemoteAddr())
-		delete(onlineConns, addr)
-		for i := range onlineConns {
-			fmt.Println("now online client:" + i)
+			var ips string = ""
+			for i := range onlineConns {
+				ips = ips + "|" + i
+			}
+			if conn, ok := onlineConns[addr]; ok {
+				input, err := Encode(ips)
+				errorCheck(err)
+				if _, err := conn.Write(input); err != nil {
+					fmt.Println("online info send failure")
+				}
+			}
 		}
-	}(conn)
+		//broadcast
+		//sourceIp*broadcast*news
+		if strings.ToUpper(action) == "BROADCAST" {
+			addr := contents[0]
+			sendMessage := strings.Join(contents[2:], "")
+			for _, conn := range onlineConns {
+				input, err := Encode(sendMessage)
+				errorCheck(err)
+				//源地址不广播
+				if onlineConns[addr] != conn {
+					if _, err := conn.Write(input); err != nil {
+						fmt.Println("online info send failure")
+					}
+				}
+			}
+		}
 
-	reader := bufio.NewReader(conn)
-	message, err := Decode(reader)
-	errorCheck(err)
-
-	//write to channel
-	messages <- message
-
-	if _, err := conn.Write([]byte(message)); err != nil {
-		fmt.Println(err)
 	}
-	fmt.Println("tcp服务端开始处理请求完毕...")
 
 }
+
 func errorCheck(err error) {
 	if err != nil {
 		fmt.Println("Decode failure", err.Error())

@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"strings"
-	"time"
 )
 
 //p buffer
@@ -19,34 +18,52 @@ const (
 )
 
 func main() {
-	t := time.Now()
-	elapsed := time.Since(t)
 	//var clientAddr = flag.String("s", "127.0.0.0:1000", "Input Server IP&PORT")
 
 	//flag.Parse()
 
 	//net.dial 拨号 获取tcp连接
-	conn, err := net.Dial("tcp", "127.0.0.1:1000")
-	checkError(err)
+	tcpAddr, _ := net.ResolveTCPAddr("tcp", "127.0.0.1:1000")
+	conn, err := net.DialTCP("tcp", nil, tcpAddr)
+	errorCheck(err)
 	defer conn.Close()
-
+	go receiveMessage(conn)
 	sendMessage(conn)
-
-	buf := make([]byte, 1024)
-	for {
-		_, err := conn.Read(buf)
-		checkError(err)
-		fmt.Println("receive from server", string(buf))
-	}
-
-	fmt.Println("Online Time is ", elapsed)
 
 }
 
-func checkError(err error) {
+func receiveMessage(conn *net.TCPConn) {
+	reader := bufio.NewReader(conn)
+	message, err := Decode(reader)
+	errorCheck(err)
+	if len(message) != 0 {
+		fmt.Println("receive from server", string(message))
+	}
+}
+func errorCheck(err error) {
 	if err != nil {
 		fmt.Println(err)
 	}
+}
+func sendMessage(conn *net.TCPConn) {
+
+	for {
+		reader := bufio.NewReader(os.Stdin)
+		data, _, _ := reader.ReadLine()
+		input := string(data)
+		if strings.ToUpper(input) == "EXIT" {
+			conn.Close()
+			os.Exit(-1)
+			break
+		}
+		message, err := Encode(input)
+		errorCheck(err)
+		if _, err := conn.Write(message); err != nil {
+			fmt.Println("Write failure" + err.Error())
+		}
+
+	}
+
 }
 func Encode(message string) ([]byte, error) {
 	// 读取消息的长度，转换成int32类型（占4个字节）
@@ -64,25 +81,25 @@ func Encode(message string) ([]byte, error) {
 	}
 	return pkg.Bytes(), nil
 }
-func sendMessage(conn net.Conn) {
-	for {
-		reader := bufio.NewReader(os.Stdin)
-		data, _, _ := reader.ReadLine()
-		input := string(data)
-
-		if strings.ToUpper(input) == "EXIT" {
-			conn.Close()
-			os.Exit(-1)
-			break
-		}
-
-		message, err := Encode(input)
-		checkError(err)
-
-		if _, err := conn.Write(message); err != nil {
-			conn.Close()
-			fmt.Println("Write failure" + err.Error())
-		}
+func Decode(reader *bufio.Reader) (string, error) {
+	// 读取消息的长度
+	lengthByte, _ := reader.Peek(4) // 读取前4个字节的数据
+	lengthBuff := bytes.NewBuffer(lengthByte)
+	var length int32
+	err := binary.Read(lengthBuff, binary.LittleEndian, &length)
+	if err != nil {
+		return "", err
+	}
+	// Buffered返回缓冲中现有的可读取的字节数。
+	if int32(reader.Buffered()) < length+4 {
+		return "", err
 	}
 
+	// 读取真正的消息数据
+	pack := make([]byte, int(4+length))
+	_, err = reader.Read(pack)
+	if err != nil {
+		return "", err
+	}
+	return string(pack[4:]), nil
 }
