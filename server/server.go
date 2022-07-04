@@ -14,8 +14,14 @@ const (
 	PORT = "1000"
 )
 
+//session interface 流程 用例，即实现场景
+//发不全的情况，回车换行判断读取结束
+//尽量别用，for test
+//forword service + saas service 环境
+//fake  forward service 用于测速，支持多个
+
 var (
-	onlineConns = make(map[string]net.TCPConn)
+	onlineConns = make(map[string]*net.TCPConn)
 	leaving     = make(chan string)
 	messages    = make(chan string, 1000) // all incoming client messages
 )
@@ -32,7 +38,7 @@ func main() {
 	}
 	defer l.Close()
 	fmt.Printf("tcp服务端开始监听 %s 端口...\n", PORT)
-
+	//ch 入参
 	go handleMessage()
 	for {
 		//Listener.Accept() 接受连接
@@ -42,9 +48,8 @@ func main() {
 			return
 		}
 		//处理tcp请求
-
 		addr := fmt.Sprintf("%s", conn.RemoteAddr())
-		onlineConns[addr] = *conn
+		onlineConns[addr] = conn
 		for i, _ := range onlineConns {
 			fmt.Println(i, "is online")
 		}
@@ -52,6 +57,8 @@ func main() {
 
 	}
 }
+
+//多用入参
 func handleConnection(conn *net.TCPConn) {
 	//一些代码逻辑...
 	fmt.Println("tcp服务端开始处理请求...")
@@ -60,20 +67,26 @@ func handleConnection(conn *net.TCPConn) {
 	defer func(conn net.TCPConn) {
 		addr := fmt.Sprintf("%s", conn.RemoteAddr())
 		fmt.Println(conn.RemoteAddr(), "has left")
+		//
+
 		delete(onlineConns, addr)
+		//del
 		for i := range onlineConns {
 			fmt.Println("now online client:" + i)
 		}
 	}(*conn)
-
-	reader := bufio.NewReader(conn)
-	message, err := Decode(reader)
-	errorCheck(err)
+	//logrus
+	for {
+		//reader handle mistake
+		reader := bufio.NewReader(conn)
+		message, err := Decode(reader)
+		errorCheck(err)
+		messages <- message
+		fmt.Println(message)
+	}
 
 	//write to channel
-
-	messages <- message
-	fmt.Println(message)
+	//msgCh
 
 	fmt.Println("tcp服务端开始处理请求完毕...")
 
@@ -85,11 +98,14 @@ func handleMessage() {
 			doProcessMessage(message)
 		case <-leaving:
 			break
+		default:
+
 		}
 	}
 }
 
 func doProcessMessage(message string) {
+	//id 替代ip
 	//# means communication，* means action
 	contents := strings.Split(message, "#")
 	//if 是#号分割的内容
