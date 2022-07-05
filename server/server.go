@@ -4,31 +4,35 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
+	"math/rand"
 	"net"
+	"strconv"
 	"strings"
-)
-
-const (
-	IP   = "127.0.0.1:"
-	PORT = "1000"
 )
 
 //session interface 流程 用例，即实现场景
 //发不全的情况，回车换行判断读取结束
-//尽量别用，for test
+//尽量别用全局变量，for test
 //forword service + saas service 环境
-//fake  forward service 用于测速，支持多个
+//fake  forward service 用于测速，支持多个同时跑
 
-var (
-	onlineConns = make(map[string]*net.TCPConn)
-	leaving     = make(chan string)
-	messages    = make(chan string, 1000) // all incoming client messages
-)
+type user struct {
+	ip   string
+	conn *net.TCPConn
+}
 
 func main() {
 
-	addr, err := net.ResolveTCPAddr("tcp", IP+PORT)
+	var onlineConns = make(map[int]user)
+	var msgCh = make(chan string, 1000) // all incoming client msgCh
+	var broadCastCh = make(chan string)
+
+	var a = flag.String("server", "127.0.0.1:1048", "Input Server IP&PORT")
+	var maxCapacity = flag.Int("capacity", 1000, "max capacity of chatroom")
+	flag.Parse()
+	addr, err := net.ResolveTCPAddr("tcp", *a)
 	if err != nil {
 		panic(err)
 	}
@@ -37,43 +41,41 @@ func main() {
 		fmt.Println(err)
 	}
 	defer l.Close()
-	fmt.Printf("tcp服务端开始监听 %s 端口...\n", PORT)
-	//ch 入参
-	go handleMessage()
+	fmt.Printf("tcp服务端开始监听 %s...\n", addr)
+
+	go handleMessage(msgCh, broadCastCh, &onlineConns)
+
 	for {
-		//Listener.Accept() 接受连接
+		//Listener.Accept()
 		conn, err := l.AcceptTCP()
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		//处理tcp请求
+
+		var u user
+		id := rand.Int() % *maxCapacity
 		addr := fmt.Sprintf("%s", conn.RemoteAddr())
-		onlineConns[addr] = conn
+		u.ip = addr
+		u.conn = conn
+		onlineConns[id] = u
 		for i, _ := range onlineConns {
 			fmt.Println(i, "is online")
 		}
-		go handleConnection(conn)
-
+		go handleConnection(conn, &msgCh, &broadCastCh, &onlineConns, id)
 	}
 }
 
 //多用入参
-func handleConnection(conn *net.TCPConn) {
+func handleConnection(conn *net.TCPConn, msgCh *chan string, broadcastCh *chan string, onlineConns *map[int]user, id int) {
 	//一些代码逻辑...
 	fmt.Println("tcp服务端开始处理请求...")
 
 	//delete connection info and print online client
 	defer func(conn net.TCPConn) {
-		addr := fmt.Sprintf("%s", conn.RemoteAddr())
-		fmt.Println(conn.RemoteAddr(), "has left")
-		//
-
-		delete(onlineConns, addr)
-		//del
-		for i := range onlineConns {
-			fmt.Println("now online client:" + i)
-		}
+		fmt.Println(id, conn.RemoteAddr(), "has left")
+		delete(*onlineConns, id)
+		conn.Close()
 	}(*conn)
 	//logrus
 	for {
@@ -81,8 +83,36 @@ func handleConnection(conn *net.TCPConn) {
 		reader := bufio.NewReader(conn)
 		message, err := Decode(reader)
 		errorCheck(err)
-		messages <- message
-		fmt.Println(message)
+		if strings.ToUpper(message) == "LIST" {
+			var ips string = ""
+			for i := range *onlineConns {
+				ips = ips + strconv.Itoa(i) + ":" + (*onlineConns)[i].ip + "|"
+			}
+			input, err := Encode(ips)
+			errorCheck(err)
+			if _, err := conn.Write(input); err != nil {
+				fmt.Println("online info send failure")
+			}
+		} else if strings.ToUpper(message) == "QUIT" {
+			input, err := Encode("bye")
+			errorCheck(err)
+			if _, err := conn.Write(input); err != nil {
+				fmt.Println("online info send failure")
+			}
+			delete(*onlineConns, id)
+			break
+		} else if str := strings.ToUpper(message); str != "" && str[0:4] == "@ALL" {
+			*broadcastCh <- message
+		} else if str := strings.ToUpper(message); str != "" && str[0] == '@' {
+			*msgCh <- message
+		} else {
+			input, err := Encode("wrong action,please input again!")
+			errorCheck(err)
+			if _, err := conn.Write(input); err != nil {
+				fmt.Println("online info send failure")
+			}
+		}
+
 	}
 
 	//write to channel
@@ -91,71 +121,44 @@ func handleConnection(conn *net.TCPConn) {
 	fmt.Println("tcp服务端开始处理请求完毕...")
 
 }
-func handleMessage() {
+func handleMessage(msgCh chan string, broadcastCh chan string, onlineConns *map[int]user) {
 	for {
 		select {
-		case message := <-messages:
-			doProcessMessage(message)
-		case <-leaving:
-			break
-		default:
-
+		case message := <-msgCh:
+			doProcessMessage(message, onlineConns)
+		case message := <-broadcastCh:
+			doBroadcast(message, onlineConns)
 		}
 	}
 }
 
-func doProcessMessage(message string) {
-	//id 替代ip
-	//# means communication，* means action
-	contents := strings.Split(message, "#")
-	//if 是#号分割的内容
+func doBroadcast(message string, onlineconns *map[int]user) {
+	contents := strings.Split(message, ":")
 	if len(contents) > 1 {
-		addr := contents[0]
-		sendMessage := strings.Join(contents[1:], "#")
-		if conn, ok := onlineConns[addr]; ok {
-			input, err := Encode(sendMessage)
+		for i := range *onlineconns {
+			input, err := Encode(contents[1])
 			errorCheck(err)
-			if _, err := conn.Write(input); err != nil {
+			if _, err := (*onlineconns)[i].conn.Write(input); err != nil {
 				fmt.Println("online info send failure")
 			}
 		}
-	} else { //action set
-		contents := strings.Split(message, "*")
-		action := contents[1]
-		if strings.ToUpper(action) == "LIST" {
-			addr := contents[0]
-
-			var ips string = ""
-			for i := range onlineConns {
-				ips = ips + "|" + i
-			}
-			if conn, ok := onlineConns[addr]; ok {
-				input, err := Encode(ips)
-				errorCheck(err)
-				if _, err := conn.Write(input); err != nil {
-					fmt.Println("online info send failure")
-				}
-			}
-		}
-		//broadcast
-		//sourceIp*broadcast*news
-		if strings.ToUpper(action) == "BROADCAST" {
-			addr := contents[0]
-			sendMessage := strings.Join(contents[2:], "")
-			for _, conn := range onlineConns {
-				input, err := Encode(sendMessage)
-				errorCheck(err)
-				//源地址不广播
-				if onlineConns[addr] != conn {
-					if _, err := conn.Write(input); err != nil {
-						fmt.Println("online info send failure")
-					}
-				}
-			}
-		}
-
 	}
-
+}
+func doProcessMessage(message string, onlineConns *map[int]user) {
+	//id 替代ip
+	//# means communication，* means action
+	contents := strings.Split(message, ":")
+	//带有用户名的命令
+	if len(contents) > 1 {
+		tmp := strings.Split(contents[0], "@")
+		desId, _ := strconv.Atoi(tmp[1])
+		conn := (*onlineConns)[desId].conn
+		input, err := Encode(contents[1])
+		errorCheck(err)
+		if _, err := conn.Write(input); err != nil {
+			fmt.Println("online info send failure")
+		}
+	}
 }
 
 func errorCheck(err error) {

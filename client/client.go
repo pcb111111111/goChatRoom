@@ -4,66 +4,58 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"net"
 	"os"
-	"strings"
 )
 
 //p buffer
 //flag parse
-const (
-	NUM_CONN     = 10
-	SIZE_MESSAGE = 1024
-)
 
 func main() {
-	//var clientAddr = flag.String("s", "127.0.0.0:1000", "Input Server IP&PORT")
+	var serverAddr = flag.String("s", "127.0.0.1:1048", "Input Server IP&PORT")
 
-	//flag.Parse()
+	flag.Parse()
 
 	//net.dial 拨号 获取tcp连接
-	tcpAddr, _ := net.ResolveTCPAddr("tcp", "127.0.0.1:1000")
+	tcpAddr, _ := net.ResolveTCPAddr("tcp", *serverAddr)
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	errorCheck(err)
-	defer conn.Close()
 	go receiveMessage(conn)
-	sendMessage(conn)
+	for {
+		reader := bufio.NewReader(os.Stdin)
+		data, _, _ := reader.ReadLine()
+		input := string(data)
+		go sendMessage(conn, input)
+	}
 
 }
 
 func receiveMessage(conn *net.TCPConn) {
-	reader := bufio.NewReader(conn)
-	message, err := Decode(reader)
-	errorCheck(err)
-	if len(message) != 0 {
-		fmt.Println("receive from server", string(message))
+	for {
+		reader := bufio.NewReader(conn)
+		message, err := Decode(reader)
+		errorCheck(err)
+		fmt.Println(message)
+		if message == "bye" {
+			conn.Close()
+			os.Exit(0)
+		}
 	}
+
 }
 func errorCheck(err error) {
 	if err != nil {
 		fmt.Println(err)
 	}
 }
-func sendMessage(conn *net.TCPConn) {
-
-	for {
-		reader := bufio.NewReader(os.Stdin)
-		data, _, _ := reader.ReadLine()
-		input := string(data)
-		if strings.ToUpper(input) == "EXIT" {
-			conn.Close()
-			os.Exit(-1)
-			break
-		}
-		message, err := Encode(input)
-		errorCheck(err)
-		if _, err := conn.Write(message); err != nil {
-			fmt.Println("Write failure" + err.Error())
-		}
-
+func sendMessage(conn *net.TCPConn, input string) {
+	message, err := Encode(input)
+	errorCheck(err)
+	if _, err := conn.Write(message); err != nil {
+		fmt.Println("Write failure" + err.Error())
 	}
-
 }
 func Encode(message string) ([]byte, error) {
 	// 读取消息的长度，转换成int32类型（占4个字节）
