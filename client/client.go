@@ -23,9 +23,10 @@ func main() {
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	errorCheck(err)
 	go receiveMessage(conn)
+	//ch控制处理流程
 	for {
 		reader := bufio.NewReader(os.Stdin)
-		data, _, _ := reader.ReadLine()
+		data, _ := reader.ReadString('\n')
 		input := string(data)
 		go sendMessage(conn, input)
 	}
