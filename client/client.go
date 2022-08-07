@@ -30,7 +30,7 @@ func main() {
 		input := string(data)
 		go sendMessage(conn, input)
 	}
-
+   
 }
 
 func receiveMessage(conn *net.TCPConn) {
@@ -48,6 +48,7 @@ func receiveMessage(conn *net.TCPConn) {
 }
 func errorCheck(err error) {
 	if err != nil {
+		fmt.Println("sss")
 		fmt.Println(err)
 	}
 }
